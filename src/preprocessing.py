@@ -16,6 +16,7 @@ from sklearn.preprocessing import (
 from category_encoders import CountEncoder
 
 
+
 def flag_invalid_values(df: pd.DataFrame, rules: dict) -> pd.DataFrame:
     """
     Applies a dict of {column: {"min": ..., "max": ...}} domain rules (either bound is
@@ -61,19 +62,15 @@ def clean_dataset(df: pd.DataFrame, diagnostics_config: dict) -> pd.DataFrame:
     out = df.copy()
     placeholder_tokens = set(diagnostics_config.get("placeholder_tokens", []))
 
-    # numeric columns that load as text purely because of a placeholder token
     for col in diagnostics_config.get("numeric_text_columns", []):
         if col in out.columns:
             out[col] = pd.to_numeric(out[col].replace(list(placeholder_tokens), np.nan), errors="coerce")
 
     flag_invalid_values(out, diagnostics_config.get("validity_rules", {}))
-
     out = _canonicalize_categories(out, diagnostics_config.get("canonical_categories", {}), placeholder_tokens)
 
     columns_to_drop = [c for c in diagnostics_config.get("redundant_columns", []) if c in out.columns]
-    out = out.drop(columns=columns_to_drop)
-
-    return out
+    return out.drop(columns=columns_to_drop)
 
 def drop_duplicate_rows(df: pd.DataFrame, id_column: str = None) -> pd.DataFrame:
     """
@@ -116,8 +113,7 @@ def split_features_target(df: pd.DataFrame, data_config: dict, mnar_indicator_so
 
     always_drop = set(drop_columns) | {target, sensitive_attr}
     feature_cols = [c for c in df.columns if c not in always_drop]
-    X = df[feature_cols]
-    return X, y, extras
+    return df[feature_cols], y, extras
 
 _SCALERS = {"none": "passthrough", "standard": StandardScaler, "minmax": MinMaxScaler, "robust": RobustScaler}
 # Each entry takes a random_state (only the target encoder actually uses it).
@@ -143,16 +139,10 @@ def build_preprocessor(preprocessing_config: dict) -> ColumnTransformer:
     training part of each CV fold only, because this object is placed *inside* the
     model's sklearn Pipeline (see main.py).
     """
-    encoder_name = preprocessing_config["encoder"]
-    scaler_name = preprocessing_config["scaler"]
-    numeric_features = preprocessing_config["numeric_features"]
-    categorical_features = preprocessing_config["categorical_features"]
-    mnar_indicator_sources = preprocessing_config.get("mnar_indicator_sources", [])
     imputation = preprocessing_config.get("imputation", {})
-
-    scaler_factory = _SCALERS[scaler_name]
+    scaler_factory = _SCALERS[preprocessing_config["scaler"]]
     scaler = scaler_factory() if callable(scaler_factory) else scaler_factory
-    encoder = _ENCODERS[encoder_name](preprocessing_config.get("random_state"))
+    encoder = _ENCODERS[preprocessing_config["encoder"]](preprocessing_config.get("random_state"))
 
     numeric_pipeline = Pipeline([
         ("impute", SimpleImputer(strategy=imputation.get("numeric_strategy", "median"))),
@@ -162,14 +152,14 @@ def build_preprocessor(preprocessing_config: dict) -> ColumnTransformer:
         ("impute", SimpleImputer(strategy=imputation.get("categorical_strategy", "most_frequent"))),
         ("encode", encoder),
     ])
-
-    indicator_cols = [f"{c}_was_missing" for c in mnar_indicator_sources]
+    indicator_cols = [f"{c}_was_missing" for c in preprocessing_config.get("mnar_indicator_sources", [])]
 
     return ColumnTransformer([
-        ("numeric", numeric_pipeline, numeric_features),
-        ("categorical", categorical_pipeline, categorical_features),
+        ("numeric", numeric_pipeline, preprocessing_config["numeric_features"]),
+        ("categorical", categorical_pipeline, preprocessing_config["categorical_features"]),
         ("indicators", "passthrough", indicator_cols),
     ])
+
 
 
 
@@ -184,7 +174,4 @@ def split_dev_test(X, y, extras, test_size: float, random_state: int):
         Cross-validation (src/evaluate.py) splits it again into train/validation folds.
       - locked test set: never used to fit, tune, compare or choose anything. Its size and seed live in config.yaml's `test_set` section and are never changed after today.
     """
-    X_dev, X_test, y_dev, y_test, extras_dev, extras_test = train_test_split(
-        X, y, extras, test_size=test_size, random_state=random_state, stratify=y
-    )
-    return X_dev, X_test, y_dev, y_test, extras_dev, extras_test
+    return train_test_split(X, y, extras, test_size=test_size, random_state=random_state, stratify=y)
